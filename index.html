@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,height=device-height,initial-scale=1" />
+  <title>GoldFish Deluxe Sync</title>
+  <style>
+    :root{
+      --bg: transparent; 
+      --glow: rgba(255, 196, 0, 0.5);
+    }
+    html, body {
+      margin:0; width:100%; height:100%;
+      background: var(--bg);
+      overflow:hidden;
+      font-family: 'Arial Black', sans-serif;
+    }
+
+    #stage { position:relative; width:100%; height:100%; overflow: hidden; }
+    #fx { position:absolute; inset:0; pointer-events:none; z-index: 5; }
+
+    #fishWrap {
+      position:absolute;
+      left:50%; top:50%;
+      transform: translate(-50%,-50%) scale(0.8);
+      transform-origin: center center;
+      filter: drop-shadow(0 10px 30px rgba(0,0,0,0.3));
+      will-change: transform;
+    }
+
+    .growth-hit { animation: growthHit 0.4s ease-out; }
+    @keyframes growthHit {
+      0% { filter: brightness(1); }
+      50% { filter: brightness(1.8) drop-shadow(0 0 60px gold); }
+      100% { filter: brightness(1) drop-shadow(0 0 20px var(--glow)); }
+    }
+
+    /* DESIGN DU POISSON COMPLET */
+    #goldieSVG { width: 480px; height: auto; display: block; overflow: visible; }
+    #tail { transform-box: fill-box; transform-origin: 100% 50%; animation: tailWag 0.8s ease-in-out infinite alternate; }
+    #finSide { transform-box: fill-box; transform-origin: 50% 0%; animation: finWave 1s ease-in-out infinite alternate; }
+
+    @keyframes tailWag { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
+    @keyframes finWave { from { transform: rotate(-5deg); } to { transform: rotate(15deg); } }
+
+    /* HUD & STAMP */
+    #deadStamp {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%,-50%) scale(0);
+      color: white; text-align: center; z-index: 10; opacity: 0; pointer-events: none;
+    }
+    .show-stamp { animation: stampIn 0.5s cubic-bezier(0.17, 0.89, 0.32, 1.49) forwards; }
+    @keyframes stampIn {
+      0% { transform: translate(-50%,-50%) scale(0); opacity: 0; }
+      100% { transform: translate(-50%,-50%) scale(1.3); opacity: 1; text-shadow: 0 0 30px gold; }
+    }
+
+    #hud {
+      position: absolute; top: 10px; left: 10px;
+      color: white; background: rgba(0,0,0,0.3);
+      padding: 10px; border-radius: 8px; font-size: 12px;
+      z-index: 100; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="hud">F9: Nourrir | F10: Reset<br>(Sync active entre onglets)</div>
+
+  <div id="stage">
+    <canvas id="fx"></canvas>
+    
+    <div id="fishWrap">
+      <svg id="goldieSVG" viewBox="0 0 520 360" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="gBody" cx="60%" cy="35%" r="80%">
+            <stop offset="0%" stop-color="#FFF3A3"/><stop offset="40%" stop-color="#FFB300"/><stop offset="100%" stop-color="#E65100"/>
+          </radialGradient>
+          <linearGradient id="gFin" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#FFD54F"/><stop offset="100%" stop-color="#FF6D00"/>
+          </linearGradient>
+          <pattern id="scales" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+            <circle cx="10" cy="10" r="8" fill="none" stroke="white" stroke-opacity="0.1" stroke-width="1"/>
+          </pattern>
+        </defs>
+        <g id="tail"><path d="M110 185 Q40 100 30 185 Q40 270 110 185" fill="url(#gFin)" /></g>
+        <g id="body">
+          <ellipse cx="290" cy="190" rx="180" ry="110" fill="url(#gBody)"/>
+          <ellipse cx="290" cy="190" rx="180" ry="110" fill="url(#scales)"/>
+          <path d="M220 95 Q290 30 380 110 Z" fill="url(#gFin)" opacity="0.9"/>
+          <path d="M180 150 Q280 100 400 150" stroke="white" stroke-width="15" stroke-linecap="round" opacity="0.25"/>
+          <g id="finSide"><path d="M290 210 Q340 220 330 280 Q270 260 290 210" fill="url(#gFin)"/></g>
+          <g id="eye">
+            <circle cx="385" cy="155" r="24" fill="white"/><circle cx="395" cy="158" r="11" fill="#222"/><circle cx="400" cy="152" r="5" fill="white"/>
+          </g>
+          <path d="M455 195 Q475 205 455 215" fill="none" stroke="#802000" stroke-width="6" stroke-linecap="round"/>
+        </g>
+      </svg>
+    </div>
+
+    <div id="deadStamp">
+      <h1 style="font-size: 80px; margin:0;">EXPLOSION !</h1>
+      <p style="font-size: 30px; margin:0;">OBJECTIF ATTEINT ✅</p>
+    </div>
+  </div>
+
+  <script>
+    // --- SYNC ENGINE ---
+    const channel = new BroadcastChannel('fish_sync');
+
+    const fishWrap = document.getElementById('fishWrap');
+    const canvas = document.getElementById('fx');
+    const ctx = canvas.getContext('2d');
+    const deadStamp = document.getElementById('deadStamp');
+
+    let scale = 0.8; 
+    let isDead = false;
+    let feedCount = 0;
+    let explodeAt = Math.floor(Math.random() * 6) + 10; 
+    let particles = [];
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    class Particle {
+      constructor(x, y, color, speed) {
+        this.x = x; this.y = y;
+        this.vx = (Math.random() - 0.5) * speed;
+        this.vy = (Math.random() - 0.5) * speed;
+        this.life = 1;
+        this.color = color;
+        this.size = Math.random() * 8 + 2;
+      }
+      draw() {
+        ctx.globalAlpha = this.life;
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
+        this.x += this.vx; this.y += this.vy;
+        this.life -= 0.015;
+      }
+    }
+
+    function triggerFeed(broadcast = true) {
+      if(isDead) return;
+      feedCount++;
+      scale += 0.18; // Grossissement maîtrisé
+      fishWrap.style.transform = `translate(-50%,-50%) scale(${scale})`;
+      
+      fishWrap.classList.remove('growth-hit');
+      void fishWrap.offsetWidth;
+      fishWrap.classList.add('growth-hit');
+
+      // Particules
+      const rect = fishWrap.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      for(let i=0; i<30; i++) particles.push(new Particle(centerX, centerY, 'gold', 10));
+
+      if(feedCount >= explodeAt) explode();
+      if(broadcast) channel.postMessage({type: 'FEED'});
+    }
+
+    function explode() {
+      isDead = true;
+      fishWrap.style.display = 'none';
+      for(let i=0; i<200; i++) {
+        particles.push(new Particle(window.innerWidth/2, window.innerHeight/2, 'orange', 25));
+        particles.push(new Particle(window.innerWidth/2, window.innerHeight/2, 'white', 30));
+      }
+      deadStamp.classList.add('show-stamp');
+    }
+
+    function triggerReset(broadcast = true) {
+      scale = 0.8; feedCount = 0; isDead = false;
+      explodeAt = Math.floor(Math.random() * 6) + 10;
+      fishWrap.style.display = 'block';
+      fishWrap.style.transform = `translate(-50%,-50%) scale(0.8)`;
+      deadStamp.classList.remove('show-stamp');
+      particles = [];
+      if(broadcast) channel.postMessage({type: 'RESET'});
+    }
+
+    // Écoute des autres fenêtres
+    channel.onmessage = (event) => {
+      if (event.data.type === 'FEED') triggerFeed(false);
+      if (event.data.type === 'RESET') triggerReset(false);
+    };
+
+    function loop() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      particles = particles.filter(p => p.life > 0);
+      particles.forEach(p => p.draw());
+      requestAnimationFrame(loop);
+    }
+    loop();
+
+    window.addEventListener('keydown', (e) => {
+      if(e.code === 'F9') triggerFeed(true);
+      if(e.code === 'F10') triggerReset(true);
+    });
+  </script>
+</body>
+</html>
